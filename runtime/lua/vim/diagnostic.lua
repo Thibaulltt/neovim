@@ -1656,7 +1656,6 @@ local function render_virtual_text(namespace, bufnr, diagnostics, opts)
     if
       (line >= buf_len)
       or (opts.current_line == true and line ~= lnum)
-      or (opts.current_line == false and line == lnum)
     then
       return false
     end
@@ -1666,15 +1665,19 @@ local function render_virtual_text(namespace, bufnr, diagnostics, opts)
 
   for line, line_diagnostics in pairs(diagnostics) do
     if should_render(line) then
-      local virt_texts = M._get_virt_text_chunks(line_diagnostics, opts)
-      if virt_texts then
-        api.nvim_buf_set_extmark(bufnr, namespace, line, 0, {
-          hl_mode = opts.hl_mode or 'combine',
-          virt_text = virt_texts,
-          virt_text_pos = opts.virt_text_pos,
-          virt_text_hide = opts.virt_text_hide,
-          virt_text_win_col = opts.virt_text_win_col,
-        })
+      for col, col_diagnostics in pairs(line_diagnostics) do
+        local virt_texts = M._get_virt_text_chunks(col_diagnostics, opts)
+        if virt_texts then
+          for _, virt_text in ipairs(virt_texts) do
+            api.nvim_buf_set_extmark(bufnr, namespace, line, col, {
+              hl_mode = opts.hl_mode or 'combine',
+              virt_text = { virt_text }, -- A single item, still wrapped in a list.
+              virt_text_pos = opts.virt_text_pos,
+              virt_text_hide = opts.virt_text_hide,
+              virt_text_win_col = opts.virt_text_win_col,
+            })
+          end
+        end
       end
     end
   end
@@ -1721,18 +1724,19 @@ M.handlers.virtual_text = {
     api.nvim_clear_autocmds({ group = ns.user_data.virt_text_augroup, buffer = bufnr })
 
     local line_diagnostics = diagnostic_lines(diagnostics)
+    local line_col_diagnostics = M._split_line_diags_per_col(line_diagnostics)
 
     if opts.virtual_text.current_line ~= nil then
       api.nvim_create_autocmd('CursorMoved', {
         buffer = bufnr,
         group = ns.user_data.virt_text_augroup,
         callback = function()
-          render_virtual_text(ns.user_data.virt_text_ns, bufnr, line_diagnostics, opts.virtual_text)
+          render_virtual_text(ns.user_data.virt_text_ns, bufnr, line_col_diagnostics, opts.virtual_text)
         end,
       })
     end
 
-    render_virtual_text(ns.user_data.virt_text_ns, bufnr, line_diagnostics, opts.virtual_text)
+    render_virtual_text(ns.user_data.virt_text_ns, bufnr, line_col_diagnostics, opts.virtual_text)
 
     save_extmarks(ns.user_data.virt_text_ns, bufnr)
   end,
@@ -2008,6 +2012,36 @@ M.handlers.virtual_lines = {
     end
   end,
 }
+
+--- @private
+--- @param line_diags table<integer, vim.Diagnostic[]>
+--- @return table<integer, table<integer, vim.Diagnostic[]>> line_col_diags The diagnostics, grouped.
+function M._split_line_diags_per_col(line_diags)
+  ---@type table<integer, table<integer, vim.Diagnostic[]>>
+  local lcd = {}
+  for line, diags in pairs(line_diags) do
+    -- Get all line diags:
+    local lcd_lnum = lcd[line]
+    if not lcd_lnum then
+      lcd_lnum = {}
+      lcd[line] = lcd_lnum
+    end
+
+    for _, diag in ipairs(diags) do
+      -- Get all col diags:
+      local lcd_lnum_lcol = lcd_lnum[diag.end_col]
+      if not lcd_lnum_lcol then
+        lcd_lnum_lcol = {}
+        lcd_lnum[diag.end_col] = lcd_lnum_lcol
+      end
+
+      -- Insert in the line,col appropriate:
+      table.insert(lcd_lnum_lcol, diag)
+    end
+  end
+
+  return lcd
+end
 
 --- Get virtual text chunks to display using |nvim_buf_set_extmark()|.
 ---
