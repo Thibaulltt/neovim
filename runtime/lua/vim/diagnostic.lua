@@ -2029,10 +2029,12 @@ function M._split_line_diags_per_col(line_diags)
 
     for _, diag in ipairs(diags) do
       -- Get all col diags:
-      local lcd_lnum_lcol = lcd_lnum[diag.end_col]
+      local endcol = diag.end_col and diag.end_col or 0
+      -- If no end_col is provided, fallback to start of line.
+      local lcd_lnum_lcol = lcd_lnum[endcol]
       if not lcd_lnum_lcol then
         lcd_lnum_lcol = {}
-        lcd_lnum[diag.end_col] = lcd_lnum_lcol
+        lcd_lnum[endcol] = lcd_lnum_lcol
       end
 
       -- Insert in the line,col appropriate:
