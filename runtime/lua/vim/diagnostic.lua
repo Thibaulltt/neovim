@@ -1653,10 +1653,7 @@ local function render_virtual_text(namespace, bufnr, diagnostics, opts)
   api.nvim_buf_clear_namespace(bufnr, namespace, 0, -1)
 
   local function should_render(line)
-    if
-      (line >= buf_len)
-      or (opts.current_line == true and line ~= lnum)
-    then
+    if (line >= buf_len) or (opts.current_line == true and line ~= lnum) then
       return false
     end
 
@@ -1665,18 +1662,16 @@ local function render_virtual_text(namespace, bufnr, diagnostics, opts)
 
   for line, line_diagnostics in pairs(diagnostics) do
     if should_render(line) then
-      for col, col_diagnostics in pairs(line_diagnostics) do
-        local virt_texts = M._get_virt_text_chunks(col_diagnostics, opts)
-        if virt_texts then
-          for _, virt_text in ipairs(virt_texts) do
-            api.nvim_buf_set_extmark(bufnr, namespace, line, col, {
-              hl_mode = opts.hl_mode or 'combine',
-              virt_text = { virt_text }, -- A single item, still wrapped in a list.
-              virt_text_pos = opts.virt_text_pos,
-              virt_text_hide = opts.virt_text_hide,
-              virt_text_win_col = opts.virt_text_win_col,
-            })
-          end
+      local virt_texts = M._get_virt_text_chunks_split_col(line_diagnostics, opts)
+      if virt_texts then
+        for _col, virt_text in pairs(virt_texts) do
+          api.nvim_buf_set_extmark(bufnr, namespace, line, _col, {
+            hl_mode = opts.hl_mode or 'combine',
+            virt_text = virt_text, -- A single item, still wrapped in a list.
+            virt_text_pos = opts.virt_text_pos,
+            virt_text_hide = opts.virt_text_hide,
+            virt_text_win_col = opts.virt_text_win_col,
+          })
         end
       end
     end
@@ -1724,19 +1719,18 @@ M.handlers.virtual_text = {
     api.nvim_clear_autocmds({ group = ns.user_data.virt_text_augroup, buffer = bufnr })
 
     local line_diagnostics = diagnostic_lines(diagnostics)
-    local line_col_diagnostics = M._split_line_diags_per_col(line_diagnostics)
 
     if opts.virtual_text.current_line ~= nil then
       api.nvim_create_autocmd('CursorMoved', {
         buffer = bufnr,
         group = ns.user_data.virt_text_augroup,
         callback = function()
-          render_virtual_text(ns.user_data.virt_text_ns, bufnr, line_col_diagnostics, opts.virtual_text)
+          render_virtual_text(ns.user_data.virt_text_ns, bufnr, line_diagnostics, opts.virtual_text)
         end,
       })
     end
 
-    render_virtual_text(ns.user_data.virt_text_ns, bufnr, line_col_diagnostics, opts.virtual_text)
+    render_virtual_text(ns.user_data.virt_text_ns, bufnr, line_diagnostics, opts.virtual_text)
 
     save_extmarks(ns.user_data.virt_text_ns, bufnr)
   end,
@@ -2013,38 +2007,6 @@ M.handlers.virtual_lines = {
   end,
 }
 
---- @private
---- @param line_diags table<integer, vim.Diagnostic[]>
---- @return table<integer, table<integer, vim.Diagnostic[]>> line_col_diags The diagnostics, grouped.
-function M._split_line_diags_per_col(line_diags)
-  ---@type table<integer, table<integer, vim.Diagnostic[]>>
-  local lcd = {}
-  for line, diags in pairs(line_diags) do
-    -- Get all line diags:
-    local lcd_lnum = lcd[line]
-    if not lcd_lnum then
-      lcd_lnum = {}
-      lcd[line] = lcd_lnum
-    end
-
-    for _, diag in ipairs(diags) do
-      -- Get all col diags:
-      local endcol = diag.end_col and diag.end_col or 0
-      -- If no end_col is provided, fallback to start of line.
-      local lcd_lnum_lcol = lcd_lnum[endcol]
-      if not lcd_lnum_lcol then
-        lcd_lnum_lcol = {}
-        lcd_lnum[endcol] = lcd_lnum_lcol
-      end
-
-      -- Insert in the line,col appropriate:
-      table.insert(lcd_lnum_lcol, diag)
-    end
-  end
-
-  return lcd
-end
-
 --- Get virtual text chunks to display using |nvim_buf_set_extmark()|.
 ---
 --- Exported for backward compatibility with
@@ -2091,6 +2053,43 @@ function M._get_virt_text_chunks(line_diags, opts)
 
     return virt_texts
   end
+end
+
+--- Get virtual text chunks to display using |nvim_buf_set_extmark()|.
+---
+--- Exported for backward compatibility with
+--- vim.lsp.diagnostic.get_virtual_text_chunks_for_line(). When that function is eventually removed,
+--- this can be made local.
+--- @private
+--- @param line_diags table<integer,vim.Diagnostic>
+--- @param opts vim.diagnostic.Opts.VirtualText
+--- @return table<integer, table>|nil
+function M._get_virt_text_chunks_split_col(line_diags, opts)
+  if #line_diags == 0 then
+    return nil
+  end
+
+  local col_chunks = {} --- @type table<integer, vim.Diagnostic[]>
+  -- Group by column first:
+  for _, diag in ipairs(line_diags) do
+    -- Prefer end_col if it's available. Makes the diag appear *after* the error.
+    local diag_col = diag.end_col and diag.end_col or diag.col
+    local chunks = col_chunks[diag_col]
+    if not chunks then
+      chunks = {}
+      col_chunks[diag_col] = chunks
+    end
+    table.insert(chunks, diag)
+  end
+
+  local final_chunks = {}
+
+  -- Now provide the chunks:
+  for _col, _chunks in pairs(col_chunks) do
+    final_chunks[_col] = M._get_virt_text_chunks(_chunks, opts)
+  end
+
+  return final_chunks
 end
 
 --- Hide currently displayed diagnostics.
