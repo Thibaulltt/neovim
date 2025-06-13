@@ -1653,7 +1653,11 @@ local function render_virtual_text(namespace, bufnr, diagnostics, opts)
   api.nvim_buf_clear_namespace(bufnr, namespace, 0, -1)
 
   local function should_render(line)
-    if (line >= buf_len) or (opts.current_line == true and line ~= lnum) then
+    if
+      (line >= buf_len)
+      or (opts.current_line == true and line ~= lnum)
+      or (opts.current_line == false and line == lnum)
+    then
       return false
     end
 
@@ -1662,12 +1666,12 @@ local function render_virtual_text(namespace, bufnr, diagnostics, opts)
 
   for line, line_diagnostics in pairs(diagnostics) do
     if should_render(line) then
-      local virt_texts = M._get_virt_text_chunks_split_col(line_diagnostics, opts)
+      local virt_texts = M._get_virt_text_chunks_split_col(bufnr, line_diagnostics, opts)
       if virt_texts then
         for _col, virt_text in pairs(virt_texts) do
           api.nvim_buf_set_extmark(bufnr, namespace, line, _col, {
             hl_mode = opts.hl_mode or 'combine',
-            virt_text = virt_text, -- A single item, still wrapped in a list.
+            virt_text = virt_text,
             virt_text_pos = opts.virt_text_pos,
             virt_text_hide = opts.virt_text_hide,
             virt_text_win_col = opts.virt_text_win_col,
@@ -2055,16 +2059,35 @@ function M._get_virt_text_chunks(line_diags, opts)
   end
 end
 
---- Get virtual text chunks to display using |nvim_buf_set_extmark()|.
+--- Returns the right column to put an extmark at: col or -1 of col > #line.
+--- @param bufnr number The buffer to inspect.
+--- @param lnum number The line number.
+--- @param col number The requested column.
+local function clamp_col_to_line_length(bufnr, lnum, col)
+  if not vim.fn.bufloaded(bufnr) then
+    -- TODO(thibaulltt): We return 0 but the buffer ain't loaded.
+    --   Unsure how we should act.
+    return 0
+  end
+
+  local _lines = vim.api.nvim_buf_get_lines(bufnr, lnum, lnum + 1, false)
+  if #_lines == 0 then
+    return 0 -- Not a real line, unsure how to act as well.
+  end
+
+  -- extmarks are end-inclusive, we can return
+  -- the length of a line to put it at the end:
+  return col > #_lines[1] and -1 or col
+end
+
+--- Get virtual text chunks to display using |nvim_buf_set_extmark()|, grouped by columns.
 ---
---- Exported for backward compatibility with
---- vim.lsp.diagnostic.get_virtual_text_chunks_for_line(). When that function is eventually removed,
---- this can be made local.
 --- @private
+--- @param bufnr number
 --- @param line_diags table<integer,vim.Diagnostic>
 --- @param opts vim.diagnostic.Opts.VirtualText
 --- @return table<integer, table>|nil
-function M._get_virt_text_chunks_split_col(line_diags, opts)
+M._get_virt_text_chunks_split_col = function(bufnr, line_diags, opts)
   if #line_diags == 0 then
     return nil
   end
@@ -2074,6 +2097,7 @@ function M._get_virt_text_chunks_split_col(line_diags, opts)
   for _, diag in ipairs(line_diags) do
     -- Prefer end_col if it's available. Makes the diag appear *after* the error.
     local diag_col = diag.end_col and diag.end_col or diag.col
+    diag_col = clamp_col_to_line_length(bufnr, diag.lnum, diag_col)
     local chunks = col_chunks[diag_col]
     if not chunks then
       chunks = {}
