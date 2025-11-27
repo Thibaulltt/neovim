@@ -1793,15 +1793,17 @@ local function render_virtual_text(namespace, bufnr, diagnostics, opts)
 
   for line, line_diagnostics in pairs(diagnostics) do
     if should_render(line) then
-      local virt_texts = M._get_virt_text_chunks(line_diagnostics, opts)
+      local virt_texts = M._get_virt_text_chunks_split_col(bufnr, line_diagnostics, opts)
       if virt_texts then
-        api.nvim_buf_set_extmark(bufnr, namespace, line, 0, {
-          hl_mode = opts.hl_mode or 'combine',
-          virt_text = virt_texts,
-          virt_text_pos = opts.virt_text_pos,
-          virt_text_hide = opts.virt_text_hide,
-          virt_text_win_col = opts.virt_text_win_col,
-        })
+        for _col, virt_text in pairs(virt_texts) do
+          api.nvim_buf_set_extmark(bufnr, namespace, line, _col, {
+            hl_mode = opts.hl_mode or 'combine',
+            virt_text = virt_text,
+            virt_text_pos = opts.virt_text_pos,
+            virt_text_hide = opts.virt_text_hide,
+            virt_text_win_col = opts.virt_text_win_col,
+          })
+        end
       end
     end
   end
@@ -2185,6 +2187,63 @@ function M._get_virt_text_chunks(line_diags, opts)
 
     return virt_texts
   end
+end
+
+--- Returns the right column to put an extmark at: col or -1 of col > #line.
+--- @param bufnr number The buffer to inspect.
+--- @param lnum number The line number.
+--- @param col number The requested column.
+local function clamp_col_to_line_length(bufnr, lnum, col)
+  if not vim.fn.bufloaded(bufnr) then
+    -- TODO(thibaulltt): We return 0 but the buffer ain't loaded.
+    --   Unsure how we should act.
+    return 0
+  end
+
+  local _lines = vim.api.nvim_buf_get_lines(bufnr, lnum, lnum + 1, false)
+  if #_lines == 0 then
+    return 0 -- Not a real line, unsure how to act as well.
+  end
+
+  -- extmarks are end-inclusive, we can return
+  -- the length of a line to put it at the end:
+  return col > #_lines[1] and -1 or col
+end
+
+--- Get virtual text chunks to display using |nvim_buf_set_extmark()|, grouped by columns.
+---
+--- @private
+--- @param bufnr number
+--- @param line_diags table<integer,vim.Diagnostic>
+--- @param opts vim.diagnostic.Opts.VirtualText
+--- @return table<integer, table>|nil
+M._get_virt_text_chunks_split_col = function(bufnr, line_diags, opts)
+  if #line_diags == 0 then
+    return nil
+  end
+
+  local col_chunks = {} --- @type table<integer, vim.Diagnostic[]>
+  -- Group by column first:
+  for _, diag in ipairs(line_diags) do
+    -- Prefer end_col if it's available. Makes the diag appear *after* the error.
+    local diag_col = diag.end_col and diag.end_col or diag.col
+    diag_col = clamp_col_to_line_length(bufnr, diag.lnum, diag_col)
+    local chunks = col_chunks[diag_col]
+    if not chunks then
+      chunks = {}
+      col_chunks[diag_col] = chunks
+    end
+    table.insert(chunks, diag)
+  end
+
+  local final_chunks = {}
+
+  -- Now provide the chunks:
+  for _col, _chunks in pairs(col_chunks) do
+    final_chunks[_col] = M._get_virt_text_chunks(_chunks, opts)
+  end
+
+  return final_chunks
 end
 
 --- Hide currently displayed diagnostics.
